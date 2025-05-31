@@ -13,120 +13,109 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 
-const loginSchema = z.object({
+const authSchema = z.object({
   email: z.string().email('Invalid email address'),
   password: z.string().min(6, 'Password must be at least 6 characters'),
 })
 
 interface AuthFormProps {
   returnUrl?: string | null;
+  isRegister?: boolean;
 }
 
-export function AuthForm({ returnUrl }: AuthFormProps) {
+export function AuthForm({ returnUrl, isRegister = false }: AuthFormProps) {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const router = useRouter()
 
-  const loginForm = useForm<z.infer<typeof loginSchema>>({
-    resolver: zodResolver(loginSchema),
+  const form = useForm<z.infer<typeof authSchema>>({
+    resolver: zodResolver(authSchema),
     defaultValues: {
       email: '',
       password: '',
     },
   })
 
-  const onLoginSubmit = async (values: z.infer<typeof loginSchema>) => {
+  const onSubmit = async (values: z.infer<typeof authSchema>) => {
     setIsLoading(true)
     setError(null)
 
     try {
-      // First, try to sign in
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email: values.email,
-        password: values.password,
-      })
+      if (isRegister) {
+        // Sign up
+        const { error: signUpError } = await supabase.auth.signUp({
+          email: values.email,
+          password: values.password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/auth/callback`,
+          },
+        })
 
-      if (signInError) {
-        // If sign in fails, try to update the user's metadata and sign in again
-        const { data: { user }, error: getUserError } = await supabase.auth.getUser()
-        
-        if (user) {
-          // Update user metadata to mark email as verified
-          const { error: updateError } = await supabase.auth.updateUser({
-            data: { email_verified: true }
-          })
+        if (signUpError) throw signUpError
 
-          if (updateError) throw updateError
+        toast.success('Registration successful! Please check your email to verify your account.')
+        router.push('/auth/confirm')
+      } else {
+        // Sign in
+        const { error: signInError } = await supabase.auth.signInWithPassword({
+          email: values.email,
+          password: values.password,
+        })
 
-          // Try signing in again
-          const { error: retryError } = await supabase.auth.signInWithPassword({
-            email: values.email,
-            password: values.password,
-          })
+        if (signInError) throw signInError
 
-          if (retryError) throw retryError
-        } else {
-          throw signInError
-        }
+        // Get user data after successful login
+        const { data: userData } = await supabase
+          .from('users')
+          .select('subscriptionstatus, niches, trial_started_at')
+          .eq('id', (await supabase.auth.getUser()).data.user?.id)
+          .single()
+
+        toast.success('Login successful')
+
+        // Use setTimeout to ensure state updates are complete before navigation
+        setTimeout(() => {
+          if (returnUrl) {
+            router.replace(decodeURIComponent(returnUrl))
+          } else if (!userData?.niches || userData.niches.length === 0) {
+            router.replace('/payment/success')
+          } else {
+            router.replace('/dashboard')
+          }
+        }, 100)
       }
-
-      // Get user data after successful login
-      const { data: userData } = await supabase
-        .from('users')
-        .select('subscriptionstatus, niches, trial_started_at')
-        .eq('id', (await supabase.auth.getUser()).data.user?.id)
-        .single()
-
-      console.log('User data after login:', userData)
-      toast.success('Login successful')
-
-      // Use setTimeout to ensure state updates are complete before navigation
-      setTimeout(() => {
-        console.log('Attempting navigation...')
-        // If there's a return URL, redirect to it
-        if (returnUrl) {
-          console.log('Redirecting to return URL:', returnUrl)
-          router.replace(decodeURIComponent(returnUrl))
-        } else if (!userData?.niches || userData.niches.length === 0) {
-          console.log('Redirecting to topic selection')
-          router.replace('/payment/success')
-          // Force a refresh after navigation
-          window.location.href = '/payment/success'
-        } else {
-          console.log('Redirecting to dashboard')
-          router.replace('/dashboard')
-          // Force a refresh after navigation
-          window.location.href = '/dashboard'
-        }
-      }, 100)
-
     } catch (error: any) {
-      console.error('Login error:', error)
-      setError(error.error_description || error.message || 'Failed to login')
-      toast.error(error.error_description || error.message || 'Failed to login')
+      console.error('Auth error:', error)
+      setError(error.error_description || error.message || 'Authentication failed')
+      toast.error(error.error_description || error.message || 'Authentication failed')
     } finally {
       setIsLoading(false)
     }
   }
 
   return (
-    <Card className="w-full max-w-md">
+    <Card className="w-full">
       <CardHeader>
-        <CardTitle>Welcome back</CardTitle>
-        <CardDescription>Sign in to your account to continue</CardDescription>
+        <CardTitle>{isRegister ? 'Create Account' : 'Welcome Back'}</CardTitle>
+        <CardDescription>
+          {isRegister 
+            ? 'Enter your email to create your account'
+            : 'Sign in to your account to continue'
+          }
+        </CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={loginForm.handleSubmit(onLoginSubmit)} className="space-y-4">
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
           <div className="space-y-2">
             <Label htmlFor="email">Email</Label>
             <Input
               id="email"
               type="email"
-              placeholder="Enter your email"
-              {...loginForm.register('email')}
+              placeholder="you@example.com"
+              {...form.register('email')}
             />
-            {loginForm.formState.errors.email && (
-              <p className="text-sm text-red-500">{loginForm.formState.errors.email.message}</p>
+            {form.formState.errors.email && (
+              <p className="text-sm text-destructive">{form.formState.errors.email.message}</p>
             )}
           </div>
           <div className="space-y-2">
@@ -134,26 +123,33 @@ export function AuthForm({ returnUrl }: AuthFormProps) {
             <Input
               id="password"
               type="password"
-              placeholder="Enter your password"
-              {...loginForm.register('password')}
+              placeholder="••••••••"
+              {...form.register('password')}
             />
-            {loginForm.formState.errors.password && (
-              <p className="text-sm text-red-500">{loginForm.formState.errors.password.message}</p>
+            {form.formState.errors.password && (
+              <p className="text-sm text-destructive">{form.formState.errors.password.message}</p>
             )}
           </div>
           {error && (
-            <p className="text-sm text-red-500">{error}</p>
+            <p className="text-sm text-destructive">{error}</p>
           )}
           <Button type="submit" className="w-full" disabled={isLoading}>
-            {isLoading ? 'Signing in...' : 'Sign in'}
+            {isLoading 
+              ? (isRegister ? 'Creating account...' : 'Signing in...') 
+              : (isRegister ? 'Create account' : 'Sign in')
+            }
           </Button>
         </form>
       </CardContent>
       <CardFooter className="flex justify-center">
         <p className="text-sm text-muted-foreground">
-          Don't have an account?{' '}
-          <Button variant="link" className="p-0" onClick={() => router.push('/register')}>
-            Sign up
+          {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
+          <Button 
+            variant="link" 
+            className="p-0 h-auto font-normal"
+            onClick={() => router.push(isRegister ? '/login' : '/register')}
+          >
+            {isRegister ? 'Sign in' : 'Create one'}
           </Button>
         </p>
       </CardFooter>
